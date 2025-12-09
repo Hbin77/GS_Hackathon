@@ -45,55 +45,55 @@ class SoilMoisturePredictor:
             self.load_model()
     
     def create_features(self, df):
-    """
-    향상된 특성 엔지니어링
-    """
-    df = df.copy()
-    
-    if df['timestamp'].dtype == 'object':
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-    
-    # 시간 특성
-    df['hour'] = df['timestamp'].dt.hour
-    df['is_daytime'] = ((df['hour'] >= 6) & (df['hour'] <= 18)).astype(int)
-    
-    # 데이터 간격 확인
-    if len(df) > 1:
-        time_diff = (df['timestamp'].iloc[1] - df['timestamp'].iloc[0]).total_seconds()
-        if time_diff < 600:
-            lag = 12  # 5분 간격
+        """
+        향상된 특성 엔지니어링
+        """
+        df = df.copy()
+        
+        if df['timestamp'].dtype == 'object':
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+        
+        # 시간 특성
+        df['hour'] = df['timestamp'].dt.hour
+        df['is_daytime'] = ((df['hour'] >= 6) & (df['hour'] <= 18)).astype(int)
+        
+        # 데이터 간격 확인
+        if len(df) > 1:
+            time_diff = (df['timestamp'].iloc[1] - df['timestamp'].iloc[0]).total_seconds()
+            if time_diff < 600:
+                lag = 12  # 5분 간격
+            else:
+                lag = 1   # 1시간 간격
         else:
-            lag = 1   # 1시간 간격
-    else:
-        lag = 1
-    
-    # Lag 특성 (과거 데이터)
-    df['soil_moisture_1h'] = df['soil_moisture'].shift(lag)
-    df['soil_moisture_2h'] = df['soil_moisture'].shift(lag * 2)
-    df['soil_moisture_3h'] = df['soil_moisture'].shift(lag * 3)
-    
-    # 변화율 특성
-    df['moisture_change'] = df['soil_moisture'] - df['soil_moisture_1h']
-    df['moisture_change_3h'] = df['soil_moisture'] - df['soil_moisture_3h']
-    
-    # 롤링 통계 (6시간)
-    df['moisture_rolling_mean'] = df['soil_moisture'].rolling(lag * 6).mean()
-    df['moisture_rolling_std'] = df['soil_moisture'].rolling(lag * 6).std()
-    df['moisture_rolling_std'] = df['moisture_rolling_std'].fillna(0)
-    
-    # 타겟: 1시간 후 토양 수분
-    df['target'] = df['soil_moisture'].shift(-lag)
-    
-    # NaN 제거
-    df = df.dropna()
-    
-    if len(df) == 0:
-        return None, None
-    
-    X = df[self.feature_columns]
-    y = df['target']
-    
-    return X, y
+            lag = 1
+        
+        # Lag 특성 (과거 데이터)
+        df['soil_moisture_1h'] = df['soil_moisture'].shift(lag)
+        df['soil_moisture_2h'] = df['soil_moisture'].shift(lag * 2)
+        df['soil_moisture_3h'] = df['soil_moisture'].shift(lag * 3)
+        
+        # 변화율 특성
+        df['moisture_change'] = df['soil_moisture'] - df['soil_moisture_1h']
+        df['moisture_change_3h'] = df['soil_moisture'] - df['soil_moisture_3h']
+        
+        # 롤링 통계 (6시간)
+        df['moisture_rolling_mean'] = df['soil_moisture'].rolling(lag * 6).mean()
+        df['moisture_rolling_std'] = df['soil_moisture'].rolling(lag * 6).std()
+        df['moisture_rolling_std'] = df['moisture_rolling_std'].fillna(0)
+        
+        # 타겟: 1시간 후 토양 수분
+        df['target'] = df['soil_moisture'].shift(-lag)
+        
+        # NaN 제거
+        df = df.dropna()
+        
+        if len(df) == 0:
+            return None, None
+        
+        X = df[self.feature_columns]
+        y = df['target']
+        
+        return X, y
     
     def train(self, df, test_size=0.2):
         """
@@ -139,12 +139,14 @@ class SoilMoisturePredictor:
         # 모델 저장
         self.save_model()
         
-        # 특성 중요도 출력
-        print("\n📈 특성별 계수 (영향력):")
-        for feature, coef in zip(self.feature_columns, self.model.coef_):
-            importance = "↑" if coef > 0 else "↓"
-            print(f"  - {feature}: {coef:.4f} {importance}")
-        print(f"  - 절편(intercept): {self.model.intercept_:.4f}")
+        # 특성 중요도 출력 (RandomForest는 feature_importances_ 사용)
+        print("\n📈 특성 중요도 (Feature Importance):")
+        importances = self.model.feature_importances_
+        # 중요도 순으로 정렬
+        feature_importance = sorted(zip(self.feature_columns, importances), key=lambda x: x[1], reverse=True)
+        for feature, importance in feature_importance:
+            bar = "█" * int(importance * 50)  # 시각화 바
+            print(f"  - {feature:25s}: {importance:.4f} {bar}")
         
         return metrics
     
