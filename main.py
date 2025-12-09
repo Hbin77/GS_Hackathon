@@ -15,9 +15,9 @@ from ai_predictor import SoilMoisturePredictor
 from visualizer import RealTimeVisualizer
 
 # ============== 설정 ==============
-SERIAL_PORT = 'COM3'  # Windows: 'COM3', Linux/Mac: '/dev/ttyUSB0'
+SERIAL_PORT = ''  # Windows: 'COM3', Linux/Mac: '/dev/ttyUSB0'
 BAUD_RATE = 9600
-MOISTURE_THRESHOLD = 30.0  # 급수 임계값 (%)
+MOISTURE_THRESHOLD = 35.0  # 급수 임계값 (%)
 WATERING_DURATION = 180    # 급수 시간 (초)
 PREDICTION_INTERVAL = 300  # 예측 주기 (5분 = 300초)
 

@@ -8,10 +8,12 @@ AI 예측 모듈
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import pickle
 import os
+
 
 class SoilMoisturePredictor:
     """토양 수분 예측 AI 모델"""
@@ -26,10 +28,16 @@ class SoilMoisturePredictor:
         self.feature_columns = [
             'soil_moisture',      # 현재 수분
             'soil_moisture_1h',   # 1시간 전 수분
-            'moisture_change',    # 수분 변화율
+            'soil_moisture_2h',   # 2시간 전 수분
+            'soil_moisture_3h',   # 3시간 전 수분
+            'moisture_change',    # 수분 변화율 (1시간)
+            'moisture_change_3h', # 수분 변화율 (3시간)
+            'moisture_rolling_mean', # 6시간 평균
+            'moisture_rolling_std',  # 6시간 표준편차
             'temperature',        # 현재 온도
             'humidity',           # 현재 습도
-            'hour'                # 시간대 (일중 변화 반영)
+            'hour',               # 시간대
+            'is_daytime'          # 낮/밤 여부
         ]
         
         # 기존 모델 로드
@@ -37,65 +45,55 @@ class SoilMoisturePredictor:
             self.load_model()
     
     def create_features(self, df):
-        """
-        특성 엔지니어링
-        
-        특성:
-        1. 현재 토양 수분
-        2. 1시간 전 토양 수분 (12개 행 이전 - 5분 간격 기준)
-        3. 수분 변화율
-        4. 온도
-        5. 습도
-        6. 시간대 (hour)
-        
-        타겟:
-        - 1시간 후 토양 수분
-        
-        Args:
-            df: 센서 데이터 DataFrame
-            
-        Returns:
-            X: 특성 DataFrame
-            y: 타겟 Series (1시간 후 수분)
-        """
-        df = df.copy()
-        
-        # 타임스탬프가 문자열이면 datetime으로 변환
-        if df['timestamp'].dtype == 'object':
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-        
-        # 시간대 추출
-        df['hour'] = df['timestamp'].dt.hour
-        
-        # 데이터가 1시간 간격인지 5분 간격인지 확인
-        if len(df) > 1:
-            time_diff = (df['timestamp'].iloc[1] - df['timestamp'].iloc[0]).total_seconds()
-            if time_diff < 600:  # 10분 미만이면 5분 간격으로 추정
-                lag = 12  # 5분 * 12 = 1시간
-            else:
-                lag = 1   # 1시간 간격
+    """
+    향상된 특성 엔지니어링
+    """
+    df = df.copy()
+    
+    if df['timestamp'].dtype == 'object':
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+    
+    # 시간 특성
+    df['hour'] = df['timestamp'].dt.hour
+    df['is_daytime'] = ((df['hour'] >= 6) & (df['hour'] <= 18)).astype(int)
+    
+    # 데이터 간격 확인
+    if len(df) > 1:
+        time_diff = (df['timestamp'].iloc[1] - df['timestamp'].iloc[0]).total_seconds()
+        if time_diff < 600:
+            lag = 12  # 5분 간격
         else:
-            lag = 1
-        
-        # 1시간 전 수분 (lag 개 행 이전)
-        df['soil_moisture_1h'] = df['soil_moisture'].shift(lag)
-        
-        # 수분 변화율 (1시간 동안의 변화)
-        df['moisture_change'] = df['soil_moisture'] - df['soil_moisture_1h']
-        
-        # 타겟: 1시간 후 수분
-        df['target'] = df['soil_moisture'].shift(-lag)
-        
-        # NaN 제거
-        df = df.dropna()
-        
-        if len(df) == 0:
-            return None, None
-        
-        X = df[self.feature_columns]
-        y = df['target']
-        
-        return X, y
+            lag = 1   # 1시간 간격
+    else:
+        lag = 1
+    
+    # Lag 특성 (과거 데이터)
+    df['soil_moisture_1h'] = df['soil_moisture'].shift(lag)
+    df['soil_moisture_2h'] = df['soil_moisture'].shift(lag * 2)
+    df['soil_moisture_3h'] = df['soil_moisture'].shift(lag * 3)
+    
+    # 변화율 특성
+    df['moisture_change'] = df['soil_moisture'] - df['soil_moisture_1h']
+    df['moisture_change_3h'] = df['soil_moisture'] - df['soil_moisture_3h']
+    
+    # 롤링 통계 (6시간)
+    df['moisture_rolling_mean'] = df['soil_moisture'].rolling(lag * 6).mean()
+    df['moisture_rolling_std'] = df['soil_moisture'].rolling(lag * 6).std()
+    df['moisture_rolling_std'] = df['moisture_rolling_std'].fillna(0)
+    
+    # 타겟: 1시간 후 토양 수분
+    df['target'] = df['soil_moisture'].shift(-lag)
+    
+    # NaN 제거
+    df = df.dropna()
+    
+    if len(df) == 0:
+        return None, None
+    
+    X = df[self.feature_columns]
+    y = df['target']
+    
+    return X, y
     
     def train(self, df, test_size=0.2):
         """
@@ -120,7 +118,13 @@ class SoilMoisturePredictor:
         )
         
         # 모델 학습
-        self.model = LinearRegression()
+        self.model = RandomForestRegressor(
+            n_estimators=100, 
+            max_depth=10, 
+            random_state=42,
+            n_jobs=-1  # 병렬 처리
+
+        )
         self.model.fit(X_train, y_train)
         
         # 예측 및 평가
@@ -165,7 +169,7 @@ class SoilMoisturePredictor:
             return None
         
         # 가장 최근 데이터로 예측
-        latest_features = X.iloc[-1:].values
+        latest_features = X.iloc[-1:]
         prediction = self.model.predict(latest_features)[0]
         
         # 예측값 범위 제한 (0~100%)
@@ -222,7 +226,7 @@ class SoilMoisturePredictor:
         except Exception as e:
             print(f"[로드 오류] {e}")
     
-    def get_watering_recommendation(self, current_moisture, predicted_moisture, threshold=30):
+    def get_watering_recommendation(self, current_moisture, predicted_moisture, threshold=35):
         """
         급수 추천
         

@@ -76,20 +76,20 @@ class DataCollector:
         except Exception as e:
             print(f"[로드 오류] {e}")
     
-    def load_simulation_data(self, days=7):
+    def load_simulation_data(self, days=14):
         """
-        시뮬레이션용 데이터 생성
+        시뮬레이션용 고품질 데이터 생성
         Mendeley 오픈 데이터(Arduino 기반 토양 수분 데이터) 구조 참고
         
-        실제 농업 환경을 모사:
-        - 토양 수분: 일중 변화 + 급수 후 상승 + 자연 건조
-        - 온도: 일교차 반영
-        - 습도: 온도와 반비례 경향
+        개선된 시뮬레이션:
+        - 날씨 패턴(맑음, 흐림, 비) 반영
+        - 날씨에 따른 증발량 및 수분 변화 차별화
+        - 비 오는 날 자연 급수 효과
         
         Args:
             days: 생성할 데이터 일수
         """
-        print(f"[시뮬레이션] {days}일치 데이터 생성 중...")
+        print(f"[시뮬레이션] {days}일치 고품질 데이터 생성 중...")
         
         np.random.seed(42)  # 재현성을 위한 시드 고정
         
@@ -104,49 +104,97 @@ class DataCollector:
         soil_moisture = 55.0  # 초기 토양 수분 (%)
         last_watering = 0     # 마지막 급수 시점
         
+        # 날씨 상태 (0: 맑음, 1: 흐림, 2: 비)
+        # 하루 단위로 날씨 변경
+        weather_pattern = []
+        for _ in range(days):
+            r = np.random.random()
+            if r < 0.6: weather = 0      # 맑음 (60%)
+            elif r < 0.85: weather = 1   # 흐림 (25%)
+            else: weather = 2            # 비 (15%)
+            weather_pattern.extend([weather] * 24)
+            
         for i, ts in enumerate(timestamps):
             hour = ts.hour
+            current_weather = weather_pattern[i]
             
             # === 온도 시뮬레이션 ===
-            # 일교차: 새벽 4시 최저, 오후 2시 최고
-            base_temp = 24.0  # 기준 온도
-            daily_variation = 6.0 * np.sin((hour - 4) * np.pi / 12)
-            noise = np.random.normal(0, 0.5)
+            # 맑음: 일교차 큼, 흐림/비: 일교차 작음
+            base_temp = 24.0
+            
+            if current_weather == 0:   # 맑음
+                daily_variation = 8.0 * np.sin((hour - 4) * np.pi / 12)
+                temp_noise = 0.5
+            elif current_weather == 1: # 흐림
+                daily_variation = 4.0 * np.sin((hour - 4) * np.pi / 12)
+                temp_noise = 0.3
+                base_temp -= 2.0
+            else:                      # 비
+                daily_variation = 2.0 * np.sin((hour - 4) * np.pi / 12)
+                temp_noise = 0.2
+                base_temp -= 4.0
+                
+            noise = np.random.normal(0, temp_noise)
             temperature = base_temp + daily_variation + noise
-            temperature = np.clip(temperature, 15, 35)
+            temperature = np.clip(temperature, 10, 40)
             
             # === 습도 시뮬레이션 ===
-            # 온도와 반비례, 새벽에 높고 낮에 낮음
-            base_humid = 65.0
-            humid_variation = -0.8 * daily_variation  # 온도 높으면 습도 낮음
-            humid_noise = np.random.normal(0, 3)
-            humidity = base_humid + humid_variation + humid_noise
-            humidity = np.clip(humidity, 40, 90)
+            # 비 > 흐림 > 맑음
+            if current_weather == 0:   # 맑음
+                base_humid = 50.0
+                humid_var = -1.0 * daily_variation # 온도와 반비례
+            elif current_weather == 1: # 흐림
+                base_humid = 70.0
+                humid_var = -0.5 * daily_variation
+            else:                      # 비
+                base_humid = 90.0
+                humid_var = -0.2 * daily_variation
+            
+            humid_noise = np.random.normal(0, 2)
+            humidity = base_humid + humid_var + humid_noise
+            humidity = np.clip(humidity, 30, 100)
             
             # === 토양 수분 시뮬레이션 ===
-            # 자연 건조율 (온도 높을수록, 낮 시간대에 더 빠름)
-            evaporation_rate = 0.3 + 0.1 * (temperature - 20) / 10
-            if 10 <= hour <= 16:  # 낮 시간대
-                evaporation_rate *= 1.5
+            # 증발률: 온도 높음, 습도 낮음, 맑음 -> 높음
+            evaporation = 0.0
             
-            # 토양 수분 감소
-            soil_moisture -= evaporation_rate + np.random.normal(0, 0.2)
+            if current_weather == 0: # 맑음
+                evaporation = 0.4 + 0.1 * (temperature - 20) / 10
+                if 10 <= hour <= 16: evaporation *= 1.8 # 낮 시간 가속
+            elif current_weather == 1: # 흐림
+                evaporation = 0.1 + 0.05 * (temperature - 20) / 10
+            else: # 비
+                evaporation = -0.5 # 오히려 습기 참 (빗물)
             
-            # 급수 시뮬레이션 (수분이 30% 이하로 떨어지면 급수)
-            if soil_moisture < 30:
-                soil_moisture += np.random.uniform(25, 35)  # 급수로 상승
+            # 토양 수분 변화
+            if current_weather == 2: # 비 오는 중
+                soil_moisture += np.random.uniform(1.0, 3.0) # 자연 급수
+                print(f"  [날씨] 비 내림 🌧️ ({ts.strftime('%m-%d %H:%M')}) - 수분 증가")
+            else:
+                soil_moisture -= evaporation + np.random.normal(0, 0.1)
+            
+            # 인공 급수 시뮬레이션 (수분이 25% 이하로 떨어지면 급수)
+            # 비가 오지 않을 때만
+            if soil_moisture < 25 and current_weather != 2:
+                soil_moisture += np.random.uniform(30, 40)  # 급수로 대폭 상승
                 last_watering = i
-                print(f"  [급수 이벤트] {ts.strftime('%Y-%m-%d %H:%M')} - 수분 {soil_moisture:.1f}%로 상승")
+                print(f"  [급수 이벤트] 💧 {ts.strftime('%m-%d %H:%M')} - 수분 {soil_moisture:.1f}%로 회복")
             
-            # 급수 직후 수분 서서히 분산
-            if i - last_watering < 3:
-                soil_moisture -= np.random.uniform(1, 3)
+            # 급수/비 직후 수분 서서히 분산 (drainage)
+            if soil_moisture > 80:
+                soil_moisture -= np.random.uniform(2, 4) # 배수 빠름
+            elif i - last_watering < 3 and current_weather != 2:
+                soil_moisture -= np.random.uniform(1, 2)
             
-            soil_moisture = np.clip(soil_moisture, 15, 80)
+            soil_moisture = np.clip(soil_moisture, 10, 95)
             
-            # 상단/하단 센서 (상단이 약간 더 건조)
-            soil_upper = soil_moisture + np.random.uniform(-3, 0)
-            soil_lower = soil_moisture + np.random.uniform(0, 3)
+            # 상단/하단 센서 차이 (비 올때는 상단이 훨씬 높음)
+            if current_weather == 2:
+                soil_upper = soil_moisture + np.random.uniform(2, 5)
+                soil_lower = soil_moisture - np.random.uniform(1, 3)
+            else:
+                soil_upper = soil_moisture - np.random.uniform(1, 4) # 상단이 더 빨리 마름
+                soil_lower = soil_moisture + np.random.uniform(0, 2)
             
             data.append({
                 'timestamp': ts.strftime('%Y-%m-%d %H:%M:%S'),
@@ -154,18 +202,19 @@ class DataCollector:
                 'soil_lower': round(soil_lower, 1),
                 'soil_moisture': round((soil_upper + soil_lower) / 2, 1),
                 'temperature': round(temperature, 1),
-                'humidity': round(humidity, 1)
+                'humidity': round(humidity, 1),
+                'weather': ['Sunny', 'Cloudy', 'Rainy'][current_weather] # 디버깅용
             })
         
         self.data_buffer = data
-        print(f"[시뮬레이션] {len(data)}개 데이터 생성 완료")
+        print(f"[시뮬레이션] {len(data)}개 고품질 데이터 생성 완료 (날씨 반영)")
         
         # 데이터 통계 출력
         df = self.get_dataframe()
         print(f"\n📊 데이터 통계:")
-        print(f"  - 토양 수분: {df['soil_moisture'].min():.1f}% ~ {df['soil_moisture'].max():.1f}% (평균: {df['soil_moisture'].mean():.1f}%)")
-        print(f"  - 온도: {df['temperature'].min():.1f}°C ~ {df['temperature'].max():.1f}°C (평균: {df['temperature'].mean():.1f}°C)")
-        print(f"  - 습도: {df['humidity'].min():.1f}% ~ {df['humidity'].max():.1f}% (평균: {df['humidity'].mean():.1f}%)")
+        print(f"  - 토양 수분: {df['soil_moisture'].min():.1f}% ~ {df['soil_moisture'].max():.1f}%")
+        print(f"  - 온도: {df['temperature'].min():.1f}°C ~ {df['temperature'].max():.1f}°C")
+        print(f"  - 날씨 분포: 맑음 {weather_pattern.count(0)/24}일, 흐림 {weather_pattern.count(1)/24}일, 비 {weather_pattern.count(2)/24}일")
         
         return df
     
